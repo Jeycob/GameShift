@@ -47,8 +47,8 @@ internal sealed class MainForm : Form
         this.preview = preview;
         startMinimized = minimized;
         Text = preview ? "GameShift — UI preview (no changes)" : "GameShift";
-        ClientSize = new Size(910, 700);
-        MinimumSize = new Size(800, 650);
+        ClientSize = new Size(910, 740);
+        MinimumSize = new Size(850, 730);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
         BackColor = Color.FromArgb(17, 26, 36);
@@ -80,7 +80,7 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new(SizeType.Absolute, 40));
         root.RowStyles.Add(new(SizeType.Absolute, 50));
         root.RowStyles.Add(new(SizeType.Absolute, 100));
-        root.RowStyles.Add(new(SizeType.Absolute, 114));
+        root.RowStyles.Add(new(SizeType.Absolute, 150));
         root.RowStyles.Add(new(SizeType.Percent, 100));
         root.RowStyles.Add(new(SizeType.Absolute, 46));
         root.RowStyles.Add(new(SizeType.Absolute, 42));
