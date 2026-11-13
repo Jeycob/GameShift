@@ -1,4 +1,5 @@
 using GameShift.Core;
+using System.Text.Json;
 
 namespace GameShift.App;
 
@@ -8,6 +9,12 @@ internal static class Program
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        if (args.Length == 2 && args[0] == "--scan-games")
+        {
+            if (!Path.IsPathFullyQualified(args[1]) || File.Exists(args[1])) throw new ArgumentException("Choose a new absolute JSON report path.");
+            File.WriteAllText(args[1], JsonSerializer.Serialize(GameLibraryScanner.ScanInstalled(), Settings.Json));
+            return;
+        }
         var smoke = args.Length == 2 && args[0] == "--ui-smoke";
         if (smoke)
         {

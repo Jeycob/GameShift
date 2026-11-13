@@ -25,6 +25,7 @@ internal sealed class MainForm : Form
     private readonly TextBox keyName = new() { Dock = DockStyle.Fill };
     private readonly Label unload = new() { AutoSize = true, Text = "Gaming always unloads model RAM + VRAM; waits for a safe boundary.", Padding = new Padding(0, 6, 0, 0) };
     private readonly CheckBox autoStart = new() { AutoSize = true, Text = "Start at sign-in, minimized to the notification area" };
+    private readonly CheckBox discover = new() { AutoSize = true, Text = "Discover installed Steam / GOG / Epic games" };
     private readonly NumericUpDown delay = new() { Minimum = 5, Maximum = 600, Value = 30, Width = 90 };
     private readonly ListBox games = new() { Dock = DockStyle.Fill, HorizontalScrollbar = true };
     private readonly ListBox aiApps = new() { Dock = DockStyle.Fill, HorizontalScrollbar = true };
@@ -32,6 +33,9 @@ internal sealed class MainForm : Form
     private Settings settings = new();
     private GateCommand? command;
     private bool exiting;
+    private IReadOnlyList<InstalledGame> discoveredGames = [];
+    private Task<GameLibraryScanResult>? libraryScan;
+    private DateTimeOffset nextLibraryScan;
     private string? startupWarning;
     private string CommandPath => Path.Combine(folder, "control.json");
     private string AckPath => Path.Combine(folder, "harness-ack.json");
@@ -92,7 +96,7 @@ internal sealed class MainForm : Form
         }
         root.Controls.Add(modes, 0, 1);
         root.Controls.Add(status, 0, 2);
-        var options = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, Padding = new Padding(0, 8, 0, 0) };
+        var options = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 4, Padding = new Padding(0, 8, 0, 0) };
         options.ColumnStyles.Add(new(SizeType.Absolute, 175)); options.ColumnStyles.Add(new(SizeType.Percent, 100)); options.ColumnStyles.Add(new(SizeType.Absolute, 145));
         options.Controls.Add(new Label { Text = "Native Strata URL", AutoSize = true }, 0, 0);
         options.Controls.Add(endpoint, 1, 0);
@@ -102,10 +106,12 @@ internal sealed class MainForm : Form
         options.Controls.Add(new Label { Text = "Not the secret itself", AutoSize = true, ForeColor = Color.LightSteelBlue }, 2, 1);
         options.Controls.Add(new Label { Text = "Resume after game (s)", AutoSize = true }, 0, 2);
         options.Controls.Add(delay, 1, 2);
+        options.Controls.Add(discover, 0, 3); options.SetColumnSpan(discover, 2);
+        options.Controls.Add(Button("Refresh games", async () => { nextLibraryScan = default; await SaveAsync(); }), 2, 3);
         root.Controls.Add(options, 0, 3);
         var paths = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
         paths.ColumnStyles.Add(new(SizeType.Percent, 50)); paths.ColumnStyles.Add(new(SizeType.Percent, 50));
-        paths.Controls.Add(PathPanel("Games — exact executable paths", games), 0, 0);
+        paths.Controls.Add(PathPanel("Additional games — optional exact .exe paths", games), 0, 0);
         paths.Controls.Add(PathPanel("AI CPU priority — optional exact paths", aiApps), 1, 0);
         root.Controls.Add(paths, 0, 4);
         var apply = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 6, 0, 0) };
@@ -161,7 +167,7 @@ internal sealed class MainForm : Form
             if (command != null && (command.Version != 1 || string.IsNullOrWhiteSpace(command.CommandId))) throw new InvalidDataException("Invalid gate command.");
             if (command?.Blocked == true)
             {
-                if (settings.Mode == SwitchMode.Automatic && settings.GamePaths.Length > 0)
+                if (settings.Mode == SwitchMode.Automatic && (settings.AutoDiscoverGames || settings.GamePaths.Length > 0))
                 {
                     policy.RestartCooldown(DateTimeOffset.UtcNow);
                     startupWarning = "Automatic mode restored. Existing hold stays until games exit, cooldown expires and Strata is ready.";
@@ -183,13 +189,14 @@ internal sealed class MainForm : Form
     {
         endpoint.Text = settings.StrataUrl; keyName.Text = settings.ApiKeyEnvironmentVariable;
         delay.Value = settings.ResumeDelaySeconds;
+        discover.Checked = settings.AutoDiscoverGames;
         games.Items.AddRange(settings.GamePaths); aiApps.Items.AddRange(settings.AiProcessPaths);
         modeLabel.Text = "GameShift  ·  " + settings.Mode;
     }
 
     private Settings ReadUi(SwitchMode? mode = null)
     {
-        var next = settings with { Mode = mode ?? settings.Mode, StrataUrl = endpoint.Text.Trim(), ApiKeyEnvironmentVariable = keyName.Text.Trim(), ResumeDelaySeconds = (int)delay.Value, GamePaths = games.Items.Cast<string>().ToArray(), AiProcessPaths = aiApps.Items.Cast<string>().ToArray() };
+        var next = settings with { Mode = mode ?? settings.Mode, StrataUrl = endpoint.Text.Trim(), ApiKeyEnvironmentVariable = keyName.Text.Trim(), AutoDiscoverGames = discover.Checked, ResumeDelaySeconds = (int)delay.Value, GamePaths = games.Items.Cast<string>().ToArray(), AiProcessPaths = aiApps.Items.Cast<string>().ToArray() };
         next.Validate(); return next;
     }
 
@@ -197,7 +204,7 @@ internal sealed class MainForm : Form
     {
         if (preview) { SetStatus("UI preview: " + mode + ". No action was taken."); return; }
         var next = ReadUi(mode);
-        if (mode == SwitchMode.Automatic && next.GamePaths.Length == 0) throw new ArgumentException("Choose at least one game executable before enabling Automatic.");
+        if (mode == SwitchMode.Automatic && !next.AutoDiscoverGames && next.GamePaths.Length == 0) throw new ArgumentException("Enable game discovery or add a game executable before enabling Automatic.");
         await cycle.WaitAsync(lifetime.Token);
         try { settings = next; ControlFiles.Write(SettingsPath, settings); modeLabel.Text = "GameShift  ·  " + settings.Mode; AddLog("Selected " + mode + "."); }
         finally { cycle.Release(); }
@@ -220,7 +227,31 @@ internal sealed class MainForm : Form
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var game = settings.Mode == SwitchMode.Automatic && PriorityController.GameRunning(settings.GamePaths);
+            if (settings.AutoDiscoverGames)
+            {
+                if (libraryScan?.IsCompleted == true)
+                {
+                    var completedScan = libraryScan;
+                    libraryScan = null;
+                    var inventory = await completedScan;
+                    discoveredGames = inventory.Games;
+                    discover.Text = $"Discover Steam / GOG / Epic ({discoveredGames.Count} installed games)";
+                    AddLog($"Game-library scan: {discoveredGames.Count} installed games; {inventory.Warnings.Count} warnings.");
+                    foreach (var warning in inventory.Warnings.Take(2)) AddLog(warning);
+                }
+                if (libraryScan is null && now >= nextLibraryScan)
+                {
+                    nextLibraryScan = now.AddMinutes(5);
+                    libraryScan = Task.Run(GameLibraryScanner.ScanInstalled);
+                }
+                if (libraryScan is not null && discoveredGames.Count == 0 && settings.Mode == SwitchMode.Automatic)
+                {
+                    SetStatus("Scanning Steam / GOG / Epic library metadata before deciding whether AI may run.");
+                    return;
+                }
+            }
+            var installed = settings.AutoDiscoverGames ? discoveredGames : [];
+            var game = settings.Mode == SwitchMode.Automatic && PriorityController.GameRunning(settings.GamePaths, installed);
             var state = policy.Evaluate(settings.Mode, game, now, settings.ResumeDelaySeconds);
             var blocked = state == WorkState.Gaming;
             if (blocked) resume.Hold();
@@ -230,7 +261,7 @@ internal sealed class MainForm : Form
             {
                 var prepared = resume.Poll(settings, now, lifetime.Token);
                 if (!prepared.Ready) { SetStatus("RESUMING: " + prepared.Message + priorityNote); return; }
-                if (settings.Mode == SwitchMode.Automatic && PriorityController.GameRunning(settings.GamePaths))
+                if (settings.Mode == SwitchMode.Automatic && PriorityController.GameRunning(settings.GamePaths, installed))
                 {
                     policy.RestartCooldown(DateTimeOffset.UtcNow);
                     resume.Hold();

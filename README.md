@@ -2,7 +2,7 @@
 
 A small Windows tray switch for sharing one PC between games and local AI.
 
-**Status:** first local build, tested with mock HTTP and plugin tests. Not yet deployed or game-tested on Sklenik. The ZIP includes a private .NET runtime; no administrator or system-wide runtime install is required.
+**Status:** the native unload/reload cycle was tested on Sklenik using a harmless test-game process. Full live Harness continuation and store-discovery acceptance are recorded separately in the deployment report; do not infer them from unit tests. The ZIP includes a private .NET runtime; no administrator or system-wide runtime install is required.
 
 ## Start
 
@@ -11,7 +11,7 @@ A small Windows tray switch for sharing one PC between games and local AI.
 3. Configure the native Strata URL. Use its local server root, not `/v1` and not the desktop app's web/proxy port. Default: `http://127.0.0.1:8080`; an existing installation may use another port.
 4. If authentication is enabled, enter the **name** of the environment variable containing the key. Default: `STRATA_API_KEY`. Never paste the secret into this field. Restart GameShift after changing a user environment variable.
 5. Install the Harness plugin below while Harness is idle. Until its acknowledgement arrives, GameShift will NOT unload the model.
-6. Add the real game `.exe` files, not launcher shortcuts. Save settings.
+6. Keep Steam / GOG / Epic discovery enabled, or add real game `.exe` files for other stores. Save settings.
 7. Choose Automatic. In Gaming, unloading model allocations from RAM and VRAM is mandatory; no opt-in checkbox is needed.
 
 ## Modes
@@ -22,6 +22,22 @@ A small Windows tray switch for sharing one PC between games and local AI.
 | Background | Lowers CPU priority only for the exact AI executables you selected. It does **not** release VRAM or limit GPU usage. |
 | Gaming | Holds new Harness model calls, lets an existing response finish, then always asks Strata to unload model allocations from RAM and VRAM. |
 | Automatic | Gaming while any configured game process exists. After all exit and cooldown expires, reloads Strata, verifies readiness, then lets Harness continue. Alt-tab does not resume AI. |
+
+## Find games automatically
+
+Steam, GOG and Epic discovery is on by default. It reads Steam library/app manifests, Epic installation manifests and GOG game registrations. It does not install launchers, log in to stores, run discovered executables or recursively search the SSD. Libraries are scanned asynchronously on startup and refreshed every five minutes; **Refresh games** requests a new scan.
+
+A running game binary inside a validated installation folder triggers Gaming. Steam/Epic/GOG clients alone, common installers, anti-cheat bootstrap tools and crash-report helpers do not. Manual executable entries remain available for other launchers or games missing from store metadata. A relocated game represented only by a junction/network path may need a manual local executable entry. Discovery is not a universal classifier for arbitrary programs.
+
+The UI shows the installed-game count and bounded scan warnings. Game detection is limited to the same interactive Windows session. It uses query-limited process image access, without administrator/debug privileges. An inaccessible/protected executable may require a manual setup or an authorized equivalent-run-level launch; GameShift never escalates itself.
+
+Read-only inventory diagnostic (the destination must be a new absolute JSON file):
+
+```powershell
+& 'C:\Tools\GameShift\GameShift.exe' --scan-games 'C:\Users\you\Documents\gameshift-games.json'
+```
+
+This report contains local game names and installation paths. Keep it private; it is not uploaded automatically.
 
 GameShift never force-kills or suspends processes, changes cooling, or edits GPU power/clock settings. A current long response can delay unloading. Cancel it in Harness yourself if you need the GPU immediately.
 
@@ -35,7 +51,7 @@ Waiting happens before the next model request, not by freezing tools or Windows 
 
 ## Automatic return after a game
 
-Keep GameShift, native Strata's HTTP server and Harness running. Select Automatic and configure actual game executables.
+Keep GameShift, native Strata's HTTP server and Harness running. Select Automatic with store discovery or additional game executables enabled.
 
 1. All configured games must have exited. The default cooldown is 30 seconds.
 2. GameShift restores the selected AI processes' former CPU priorities and checks Strata.
@@ -109,4 +125,4 @@ The distributed EXE is framework-dependent with an adjacent private Windows x64 
 
 ## Limitations
 
-No live Sklenik test or automatic remote installation has been performed. No game-speed, GPU-priority, instantaneous pause, LM Studio integration, or automatic recovery of arbitrary failed tools is guaranteed. Process priority changes are best-effort and apply only to exact executable paths selected by the user.
+See the deployment report for the exact live tests completed. No game-speed, GPU-priority, instantaneous pause, LM Studio integration, or automatic recovery of arbitrary failed tools is guaranteed. Process priority changes are best-effort and apply only to exact executable paths selected by the user.

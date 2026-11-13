@@ -34,7 +34,8 @@ try
     Check(!System.Text.Json.JsonSerializer.Serialize(migrated, Settings.Json).Contains("AllowModelUnload"), "Legacy opt-out cannot disable mandatory gaming unload");
     Reject(() => (new Settings { GamePaths = ["python.exe"] }).Validate(), "Relative path");
     Reject(() => (new Settings { ResumeDelaySeconds = 0 }).Validate(), "Delay");
-    Reject(() => (new Settings { Mode = SwitchMode.Automatic }).Validate(), "Automatic mode needs game paths");
+    Reject(() => (new Settings { Mode = SwitchMode.Automatic, AutoDiscoverGames = false }).Validate(), "Automatic mode needs game paths or discovery");
+    new Settings { Mode = SwitchMode.Automatic }.Validate(); count++;
     Reject(() => (new Settings { ApiKeyEnvironmentVariable = "key-value" }).Validate(), "Env name");
     var command = new GateCommand(1, "id", true, "Gaming", now);
     var ack = new GateAck(1, "id", true, 0, now);
@@ -163,7 +164,8 @@ try
             Check((await backend.EnsureLoadedAsync(new Settings(), CancellationToken.None)).Ready && handler.Loaded, "Game exit restores same backend");
         }
     }
-    Console.WriteLine($"PASS: {count} assertions; mock HTTP only, no hardware changes.");
+    GameLibraryTests.Run(Check);
+    Console.WriteLine($"PASS: {count} assertions; mock HTTP and disposable game-library fixtures only, no hardware changes.");
     return 0;
 }
 catch (Exception error) { Console.Error.WriteLine(error); return 1; }
