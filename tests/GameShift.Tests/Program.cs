@@ -164,6 +164,7 @@ try
             Check((await backend.EnsureLoadedAsync(new Settings(), CancellationToken.None)).Ready && handler.Loaded, "Game exit restores same backend");
         }
     }
+    await AuthTests.RunAsync(Check);
     GameLibraryTests.Run(Check);
     Console.WriteLine($"PASS: {count} assertions; mock HTTP and disposable game-library fixtures only, no hardware changes.");
     return 0;

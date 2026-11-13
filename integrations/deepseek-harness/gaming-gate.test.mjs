@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { GamingGate, apply } from './gaming-gate.mjs';
 
@@ -50,6 +51,74 @@ test('second writer rejected; dispose keeps hold', t => {
   assert.throws(() => new GamingGate(dir), /already has a writer/);
   command(true); gate.close();
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'control.json'))).Blocked, true);
+});
+
+test('dead legacy PID lock is recovered after an unclean exit without releasing a hold', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gameshift-restart-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const exited = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+  assert.equal(exited.status, 0);
+  assert.ok(exited.pid > 0);
+  assert.throws(() => process.kill(exited.pid, 0), error => error.code === 'ESRCH');
+  fs.writeFileSync(path.join(dir, 'harness.lock'), String(exited.pid));
+  fs.writeFileSync(path.join(dir, 'control.json'), JSON.stringify({ Version: 1, CommandId: 'preserved', Blocked: true }));
+  const gate = new GamingGate(dir);
+  try {
+    assert.equal(fs.readFileSync(path.join(dir, 'harness.lock'), 'utf8'), String(process.pid));
+    const ack = JSON.parse(fs.readFileSync(path.join(dir, 'harness-ack.json')));
+    assert.equal(ack.CommandId, 'preserved'); assert.equal(ack.Blocked, true);
+    assert.throws(() => new GamingGate(dir), /already has a writer/);
+    assert.equal(fs.existsSync(path.join(dir, 'harness.lock.claim')), false);
+  } finally { gate.close(); }
+});
+
+test('corrupt writer record is never removed during recovery', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gameshift-corrupt-lock-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const lock = path.join(dir, 'harness.lock');
+  fs.writeFileSync(lock, 'not-a-pid');
+  assert.throws(() => new GamingGate(dir), /cannot be safely recovered/);
+  assert.equal(fs.readFileSync(lock, 'utf8'), 'not-a-pid');
+  assert.equal(fs.existsSync(lock + '.claim'), false);
+});
+
+test('a concurrent or crashed claim fails closed and cannot replace a live writer', t => {
+  const { dir, gate } = fixture(t);
+  const lock = path.join(dir, 'harness.lock');
+  fs.writeFileSync(lock + '.claim', String(process.pid));
+  assert.throws(() => new GamingGate(dir), /cannot be safely recovered/);
+  assert.equal(fs.readFileSync(lock, 'utf8'), String(process.pid));
+  assert.equal(gate.closed, false);
+  fs.unlinkSync(lock + '.claim');
+});
+
+test('two process starters have exactly one writer, also when recovering a dead PID', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gameshift-race-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const exited = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+  assert.equal(exited.status, 0);
+  fs.writeFileSync(path.join(dir, 'harness.lock'), String(exited.pid));
+  const script = `import { GamingGate } from ${JSON.stringify(new URL('./gaming-gate.mjs', import.meta.url).href)};
+    process.stdin.once('data', () => {
+      try { const gate = new GamingGate(process.argv[1]); console.log('OWNER'); setTimeout(() => { gate.close(); process.exit(0); }, 1000); }
+      catch { console.log('REFUSED'); process.exit(0); }
+    });`;
+  const starters = Array.from({ length: 2 }, () => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, dir], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const completed = new Promise((resolve, reject) => {
+      let output = ''; let error = '';
+      child.stdout.on('data', chunk => output += chunk);
+      child.stderr.on('data', chunk => error += chunk);
+      child.once('error', reject);
+      child.once('close', code => code === 0 ? resolve(output.trim()) : reject(new Error(error || `Child exited ${code}`)));
+    });
+    return { child, completed };
+  });
+  for (const { child } of starters) child.stdin.end('go');
+  const outcomes = await Promise.all(starters.map(x => x.completed));
+  assert.deepEqual(outcomes.sort(), ['OWNER', 'REFUSED']);
+  assert.equal(fs.existsSync(path.join(dir, 'harness.lock')), false);
+  assert.equal(fs.existsSync(path.join(dir, 'harness.lock.claim')), false);
 });
 test('failed stream releases active count', async t => {
   const { gate, ack } = fixture(t);

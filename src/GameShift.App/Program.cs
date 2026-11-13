@@ -9,6 +9,23 @@ internal static class Program
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        if (args.Length == 2 && args[0] == "--probe-strata")
+        {
+            if (!Path.IsPathFullyQualified(args[1]) || File.Exists(args[1])) throw new ArgumentException("Choose a new absolute JSON report path.");
+            try
+            {
+                var configuration = ControlFiles.Read<Settings>(Path.Combine(ControlFiles.DefaultDirectory, "settings.json")) ?? new Settings();
+                configuration.Validate();
+                using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false }) { Timeout = TimeSpan.FromSeconds(10) };
+                var status = new StrataClient(http).ProbeAuthenticationAsync(configuration, CancellationToken.None).GetAwaiter().GetResult();
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { authenticated = status == 200, statusCode = status, readOnly = true, time = DateTimeOffset.UtcNow }, Settings.Json));
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException or ArgumentException or InvalidOperationException or OperationCanceledException)
+            {
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { authenticated = false, errorType = error.GetType().Name, readOnly = true, time = DateTimeOffset.UtcNow }, Settings.Json));
+            }
+            return;
+        }
         if (args.Length == 2 && args[0] == "--scan-games")
         {
             if (!Path.IsPathFullyQualified(args[1]) || File.Exists(args[1])) throw new ArgumentException("Choose a new absolute JSON report path.");

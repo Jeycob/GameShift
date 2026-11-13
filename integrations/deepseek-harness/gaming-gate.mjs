@@ -7,6 +7,49 @@ import { setTimeout as sleep } from 'node:timers/promises';
 export const name = 'gameshift-gaming-gate';
 export const inject = ['llm'];
 
+function acquireWriterLock(lockPath) {
+  // Serialize ALL new lock claims, including dead-PID recovery. Checking a PID
+  // and unlinking without this guard can let two starters delete each other's
+  // freshly acquired lock. A crashed claim itself fails closed for inspection.
+  const claimPath = lockPath + '.claim';
+  let claim;
+  try { claim = fs.openSync(claimPath, 'wx'); }
+  catch (error) { throw new Error('GameShift gate is already starting, or a stale harness.lock.claim needs inspection. Stop all Harness instances before removing a stale claim.', { cause: error }); }
+  try {
+    fs.writeFileSync(claim, String(process.pid));
+    let writer;
+    try { writer = fs.openSync(lockPath, 'wx'); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      // Accept the legacy plain-PID format, but never guess at corrupt records.
+      const fd = fs.openSync(lockPath, 'r');
+      let text;
+      try {
+        if (fs.fstatSync(fd).size > 32) throw new Error('Invalid writer lock.');
+        text = fs.readFileSync(fd, 'utf8').trim();
+      } finally { fs.closeSync(fd); }
+      if (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text)))
+        throw new Error('Invalid writer lock.');
+      let definitelyDead = false;
+      try { process.kill(Number(text), 0); }
+      catch (probeError) {
+        // Access denied and every unknown error mean NOT proven dead. PID reuse
+        // may therefore require manual inspection; it can never grant two owners.
+        definitelyDead = probeError.code === 'ESRCH';
+      }
+      if (!definitelyDead) throw new Error('Writer is alive or its state cannot be verified.');
+      fs.unlinkSync(lockPath);
+      writer = fs.openSync(lockPath, 'wx');
+    }
+    try { fs.writeFileSync(writer, String(process.pid)); }
+    catch (error) { fs.closeSync(writer); fs.unlinkSync(lockPath); throw error; }
+    return writer;
+  } finally {
+    fs.closeSync(claim);
+    fs.unlinkSync(claimPath);
+  }
+}
+
 // One Harness process per control directory. Multiple processes require a broker;
 // refusing a second writer prevents an idle ACK from hiding another busy client.
 export class GamingGate {
@@ -19,10 +62,9 @@ export class GamingGate {
     fs.mkdirSync(directory, { recursive: true });
     this.lockPath = path.join(directory, 'harness.lock');
     try {
-      this.lock = fs.openSync(this.lockPath, 'wx');
-      fs.writeFileSync(this.lock, String(process.pid));
+      this.lock = acquireWriterLock(this.lockPath);
     } catch (error) {
-      throw new Error('GameShift gate already has a writer, or a stale harness.lock remains. Stop other Harness instances before removing the stale lock.', { cause: error });
+      throw new Error('GameShift gate already has a writer, or its lock cannot be safely recovered. Stop other Harness instances before inspecting stale harness.lock / harness.lock.claim files.', { cause: error });
     }
     try { this.refresh(); }
     catch (error) { this.close(); throw error; }

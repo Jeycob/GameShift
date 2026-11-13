@@ -9,7 +9,7 @@ A small Windows tray switch for sharing one PC between games and local AI.
 1. Extract the entire ZIP to a permanent folder such as `C:\Tools\GameShift`.
 2. Run `GameShift.exe`. Do not move the EXE away from its DLLs and `runtime` folder.
 3. Configure the native Strata URL. Use its local server root, not `/v1` and not the desktop app's web/proxy port. Default: `http://127.0.0.1:8080`; an existing installation may use another port.
-4. If authentication is enabled, enter the **name** of the environment variable containing the key. Default: `STRATA_API_KEY`. Never paste the secret into this field. Restart GameShift after changing a user environment variable.
+4. If authentication is enabled, enter the **name** of the environment variable containing the key. Default: `STRATA_API_KEY`. Never paste the secret into this field. On Windows, GameShift reads the current persisted **User** value on every request; a nonblank User value takes precedence over an inherited Process value. If the User value is absent or blank, it falls back to the current Process environment. Non-Windows builds use Process only. Nothing is read from Machine scope. A User-key rotation needs no sign-out or permanent PowerShell launcher; an updated Process-only value must actually reach the GameShift process (usually by restarting it from a refreshed parent process). If User-variable access is denied, the operation fails visibly rather than silently using an old inherited credential. Key values are never stored in GameShift settings or logs.
 5. Install the Harness plugin below while Harness is idle. Until its acknowledgement arrives, GameShift will NOT unload the model.
 6. Keep Steam / GOG / Epic discovery enabled, or add real game `.exe` files for other stores. Save settings.
 7. Choose Automatic. In Gaming, unloading model allocations from RAM and VRAM is mandatory; no opt-in checkbox is needed.
@@ -90,7 +90,7 @@ The bridge contains:
 - `harness-ack.json`: plugin acknowledgement, stream count and timestamp.
 - `harness.lock`: one-writer guard, preventing a second Harness from overwriting a busy client's acknowledgement.
 
-A malformed file fails closed. After a Harness crash, stop all Harness processes before removing a stale `harness.lock`, then restart Harness. Do not remove a lock belonging to a live process. To release a hold, open GameShift and choose AI. Exiting or crashing GameShift does not silently resume AI during a game.
+A malformed file fails closed. After a crash or Windows restart, the gate automatically recovers a plain-PID `harness.lock` only when Windows confirms that process no longer exists; the existing gaming hold stays intact. A live/reused PID, access-denied probe, corrupt record, or abandoned `harness.lock.claim` fails closed. In those cases stop all Harness processes, inspect the lock files and remove only verified stale locks before restarting Harness. Never remove a live process's lock. The short-lived claim file serializes simultaneous starters; it is not an expiring lease. To release a hold, open GameShift and choose AI. Exiting or crashing GameShift does not silently resume AI during a game.
 
 ## First real acceptance test
 
@@ -109,6 +109,8 @@ If the native API returns 409, GameShift waits rather than killing work. If it r
 Closing the window hides it in the notification area. Double-click its tray icon to reopen it. Exit is in the tray menu. An active gaming hold remains after Exit; CPU priority changes are restored where permissions permit.
 
 Start-at-sign-in is opt-in and uses only the current user's `GameShift` Run entry. No elevation is requested. Keep the extracted folder in place. Disable this option before deleting GameShift.
+
+For a read-only authentication check without opening a second tray instance, run `GameShift.exe --probe-strata C:\path\new-report.json`. The report path must be new and absolute. This checks the authenticated model-list endpoint, not just the possibly public health endpoint. It never starts generation or loads/unloads a model, and records only HTTP status/error type, not credential values. **Test connection** also checks authentication.
 
 ## Build and test
 

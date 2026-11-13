@@ -105,11 +105,37 @@ public sealed class StrataClient(HttpClient client)
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(root, "health"));
         AddAuth(request, settings);
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        return response.IsSuccessStatusCode ? "Health endpoint responds. This check does not unload or pause anything." : $"Health check: HTTP {(int)response.StatusCode}.";
+        if (!response.IsSuccessStatusCode) return $"Health check: HTTP {(int)response.StatusCode}.";
+        var authentication = await ProbeAuthenticationAsync(settings, cancellationToken);
+        return authentication == 200 ? "Native health and authenticated model-list endpoints respond. No model is loaded, unloaded or paused by this check."
+            : $"Health responds, but authenticated model-list check returned HTTP {authentication}. Check the current-user API key variable.";
+    }
+    public async Task<int> ProbeAuthenticationAsync(Settings settings, CancellationToken cancellationToken)
+    {
+        var root = Settings.ValidateEndpoint(settings.StrataUrl);
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(root, "v1/models"));
+        AddAuth(request, settings);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        return (int)response.StatusCode;
     }
     private static void AddAuth(HttpRequestMessage request, Settings settings)
     {
-        var key = string.IsNullOrEmpty(settings.ApiKeyEnvironmentVariable) ? null : Environment.GetEnvironmentVariable(settings.ApiKeyEnvironmentVariable);
-        if (!string.IsNullOrWhiteSpace(key)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key.Trim());
+        var name = settings.ApiKeyEnvironmentVariable;
+        if (string.IsNullOrEmpty(name)) return;
+        string? key = null;
+        if (OperatingSystem.IsWindows())
+        {
+            // Explorer and Task Scheduler may retain an older environment block.
+            // Read the current user's persisted value on EVERY request so a key
+            // rotation does not need a permanent PowerShell wrapper or sign-out.
+            try { key = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User); }
+            catch (Exception error) when (error is System.Security.SecurityException or UnauthorizedAccessException)
+            { throw new InvalidOperationException("The current-user API key variable could not be read. Check current-user environment permissions."); }
+        }
+        if (string.IsNullOrWhiteSpace(key)) key = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Process);
+        if (string.IsNullOrWhiteSpace(key)) return;
+        key = key.Trim();
+        if (key.Any(char.IsControl)) throw new InvalidOperationException("The API key variable contains invalid control characters. No request was sent.");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
     }
 }
